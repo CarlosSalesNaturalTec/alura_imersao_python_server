@@ -36,7 +36,7 @@ safety_settings = [
 my_api_key = os.environ.get("API_KEY") 
 system_instruction =  os.environ.get("SYSTEM_INSTRUCTIONS")
 
-# inicia modelo
+# Inicia modelo
 genai.configure(api_key=my_api_key)
 model = genai.GenerativeModel(model_name="gemini-1.5-pro-latest",
                               generation_config=generation_config,
@@ -47,18 +47,37 @@ app = Flask(__name__)
 
 # Endpoint POST para receber dados do webhook
 @app.route("/webhook", methods=["POST"])
-def webhook():
+def webhook():   
+    # obtem mensagem da WhatsApp Cloud API
+    data = request.json
+    if data.get("entry") and data["entry"][0].get("changes"):
+        change = data["entry"][0]["changes"][0]
+        if change.get("value") and change["value"].get("messages"):
+            message = change["value"]["messages"][0]
+            id_message = message.get("id")
+            tel = message.get("from")
+            timestamp = message.get("timestamp")
+            type_message = message.get("type")
 
-    # obtem dados da requisição
-    data = request.get_json()
-    historico = data.get("historico")
-    mensagem = data.get("mensagem")
+            if type_message == "text":
+                body_message = message.get("text").get("body")
+            elif type_message == "button":
+                body_message = message.get("button").get("text")
+            else:
+                body_message = f"Mensagem do Tipo: {type_message}"
+                resposta = f"Mensagem recebida de {tel}: {body_message}"
 
+    # envia mensagem para ser processada pela IA
     convo = model.start_chat(history= [])
-    convo.send_message(mensagem)
+    convo.send_message(body_message)
     resposta = convo.last.text
 
-    return jsonify({"response": resposta}), 200    
+    # envia resposta de volta para o usuário através da WhatsApp Cloud API
+    response = envia_msg_texto(tel, resposta)
+    if response == True:
+      return jsonify({"status": "Ok"}), 200
+    else:
+      return jsonify({"status": "Erro ao enviar resposta pelo WhatsApp"}), 400
 
 # Endpoint GET para validação do webhook junto a WhatsApp Cloud API
 @app.route("/webhook", methods=["GET"])
@@ -75,6 +94,42 @@ def verify_webhook():
             return "Verification failed", 403
     else:
         return "Invalid request", 400
+
+def envia_msg_texto(tel, text_response):
+    
+    url_base = os.environ.get("URL_BASE") 
+    id_tel = os.environ.get("ID_TEL") 
+    token = os.environ.get("TOKEN") 
+
+    data = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": tel,
+        "type": "text",
+        "text": {
+            "preview_url": False,
+            "body": text_response
+        }
+    }
+
+    url = f"{url_base}/{id_tel}/messages"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+    }
+
+    response = requests.post(url, headers=headers, json=data)
+
+    if response.status_code == 200:
+        json_response = response.json()
+        if json_response.get("messages") and json_response["messages"][0].get("id"):            
+            return True  # Indica sucesso
+        else:
+            print("Erro: retorno esperado não recebido.")
+    else:
+        print(f"Erro ao enviar mensagem. Status code: {response.status_code}")
+
+    return False  # Indica falha        
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
