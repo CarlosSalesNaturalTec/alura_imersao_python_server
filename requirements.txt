@@ -5,3 +5,4 @@ python-dotenv==1.0.1
 requests==2.31.0
 google-generativeai
 google-cloud-storage
+firebase_admin

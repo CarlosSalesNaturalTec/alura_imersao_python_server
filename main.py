@@ -7,15 +7,17 @@ import hashlib
 import time
 import google.generativeai as genai
 from google.cloud import storage 
+import firebase_admin
+from firebase_admin import credentials, firestore
 from dotenv import load_dotenv
 load_dotenv()  
 
 # Variáveis de ambiente
-my_api_key = os.environ.get("API_KEY")                        # Gemini
-system_instruction =  os.environ.get("SYSTEM_INSTRUCTIONS")   # Gemini
-url_base = os.environ.get("URL_BASE")                         # WhatsApp Cloud API
-token = os.environ.get("TOKEN")                               # WhatsApp Cloud API
-bucket_name = os.environ.get("BUCKET_NAME")                   # Google Cloud Storage - Bucket para armazenamento de midias
+my_api_key = os.environ.get("API_KEY")                        # Gemini - API_KEY
+system_instruction =  os.environ.get("SYSTEM_INSTRUCTIONS")   # Gemini - Instruções do Sistema / Prompt contendo a "Persona" do Assistente.
+url_base = os.environ.get("URL_BASE")                         # WhatsApp Cloud API - URL base da API (incluindo versão)
+token = os.environ.get("TOKEN")                               # WhatsApp Cloud API - Token de segurança para acesso às mensagens 
+bucket_name = os.environ.get("BUCKET_NAME")                   # Google Cloud Storage - Nome do Bucket para armazenamento de midias
 
 # Parâmetros do modelo
 generation_config = {
@@ -50,6 +52,11 @@ model = genai.GenerativeModel(model_name="gemini-1.5-pro-latest",
                               system_instruction=system_instruction,
                               safety_settings=safety_settings)
 
+# Inicializa o Firebase app (Gestão de Banco No-SQL ref. histórico de mensagens)
+cred = credentials.Certificate("/credentials/firebase_credentials.json")    # Path: /credentials/... => volume criado dentro do container / Google Cloud Run
+firebase_admin.initialize_app(cred)
+db = firestore.client()
+
 app = Flask(__name__)
 
 # Endpoint POST para recebimento de notificações da WhatsApp Cloud API
@@ -67,11 +74,17 @@ def webhook():
 
             # Tratamento de Mensagens de TEXTO
             if type_message == "text":
-                body_message = message.get("text").get("body")      # texto da nova mensagem digitada pelo usuário                
+                body_message = message.get("text").get("body")      # Texto da mensagem digitada pelo usuário      
+                role = "user"                                       # role=user => mensagem enviada pelo usuário
+                store_message(tel, role, body_message)              # Salva mensagem em banco NO-SQL. 
+
                 convo = model.start_chat(history= [])               # Inicia chat, contextualizando a IA com o histórico da conversação
                 convo.send_message(body_message)                    # envia nova mensagem para ser processada pela IA
                 response = convo.last.text                          # Obtem resposta da IA
-                send_text_message(tel, response)                    # envia resposta de volta para o usuário através da WhatsApp Cloud API                
+                send_message = send_text_message(tel, response)     # Envia resposta de volta para o usuário através da WhatsApp Cloud API                
+                if send_message:
+                    role = "model"                                  # role=model => mensagem enviada pela IA
+                    store_message(tel, role, response)              # Salva mensagem em banco NO-SQL. 
             
             # Tratamento de Mensagens de AUDIO
             elif type_message == "audio":                
@@ -196,6 +209,20 @@ def store_media(media, tel):
         print(f"Erro ao tentar salvar mídia no Bucket da Google Cloud Storage. Detalhes: {e}")
         return False
 
+
+# Salva mensagem em banco No-SQL para recuperação de histórico de conversa
+def store_message(tel, role, message):
+    try:
+        doc_ref = db.collection(f"messages_{tel}").document()
+        doc_ref.set({
+            "timestamp": time.time(),
+            "role": role,
+            "parts": [message]
+        })    
+    except Exception as e:
+        print(f"Erro ao salvar mensagem no Firebase/FireStore. Detalhes: {e}")
+        return False
+    
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
