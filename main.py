@@ -5,14 +5,16 @@ import os
 import requests
 import hashlib
 import google.generativeai as genai
+from google.cloud import storage 
 from dotenv import load_dotenv
 load_dotenv()  
 
 # Variáveis de ambiente
 my_api_key = os.environ.get("API_KEY")                        # Gemini
 system_instruction =  os.environ.get("SYSTEM_INSTRUCTIONS")   # Gemini
-url_base = os.environ.get("URL_BASE")   # WhatsApp Cloud API
-token = os.environ.get("TOKEN")         # WhatsApp Cloud API
+url_base = os.environ.get("URL_BASE")                         # WhatsApp Cloud API
+token = os.environ.get("TOKEN")                               # WhatsApp Cloud API
+bucket_name = os.environ.get("BUCKET_NAME")                   #Google Cloud Storage
 
 # Parâmetros do modelo
 generation_config = {
@@ -158,7 +160,7 @@ def get_url_media(id_media):
         return "Erro"
 
 
-# Realiza o Download da midia (audio/video) enviada
+# Realiza o Download da midia (audio/video) enviada e salva em Bucket do Google Cloud Storage
 def download_media(url_media):    
     headers = {
         "Authorization": f"Bearer {token}"
@@ -168,13 +170,18 @@ def download_media(url_media):
         response = requests.get(url_media, headers=headers, stream=True)
         response.raise_for_status()  # Verifica se a requisição foi bem-sucedida
 
-        # Salva o arquivo
-        with open("audio.ogg", "wb") as f:
-            for chunk in response.iter_content(1024):
-                f.write(chunk)
-        return "Ok"
+        # Conecta ao Google Cloud Storage
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob("audio.ogg")
+
+        # Salva o arquivo no Cloud Storage
+        blob.upload_from_string(response.content, content_type="audio/ogg")
+        return "OK"
     except requests.exceptions.RequestException as e:
-        return f"Erro: {e}"
+        return f"Erro ao baixar o arquivo de áudio: {e}"
+    except Exception as e:
+        return f"Erro ao salvar no Cloud Storage: {e}"
     
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
