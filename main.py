@@ -14,7 +14,7 @@ my_api_key = os.environ.get("API_KEY")                        # Gemini
 system_instruction =  os.environ.get("SYSTEM_INSTRUCTIONS")   # Gemini
 url_base = os.environ.get("URL_BASE")                         # WhatsApp Cloud API
 token = os.environ.get("TOKEN")                               # WhatsApp Cloud API
-bucket_name = os.environ.get("BUCKET_NAME")                   #Google Cloud Storage
+bucket_name = os.environ.get("BUCKET_NAME")                   # Google Cloud Storage - Bucket para armazenamento de midias
 
 # Parâmetros do modelo
 generation_config = {
@@ -51,11 +51,12 @@ model = genai.GenerativeModel(model_name="gemini-1.5-pro-latest",
 
 app = Flask(__name__)
 
-# Endpoint POST para receber dados do webhook
+# Endpoint POST para recebimento de notificações da WhatsApp Cloud API
 @app.route("/webhook", methods=["POST"])
 def webhook():   
-    # obtem mensagem enviada pelo usuário (WhatsApp Cloud API)
     data = request.json
+
+    # Tratamento de mensagens recebidas
     if data.get("entry") and data["entry"][0].get("changes"):
         change = data["entry"][0]["changes"][0]
         if change.get("value") and change["value"].get("messages"):
@@ -63,35 +64,45 @@ def webhook():
             tel = message.get("from")
             type_message = message.get("type")
 
+            # Tratamento de Mensagens de TEXTO
             if type_message == "text":
-                body_message = message.get("text").get("body")
-            elif type_message == "button":
-                body_message = message.get("button").get("text")
-            elif type_message == "audio":
-                # obtem URL do audio
+                body_message = message.get("text").get("body")   # texto da nova mensagem digitada pelo usuário
+                
+                convo = model.start_chat(history= [])   # Inicia chat, contextualizando a IA com o histórico da conversação
+                convo.send_message(body_message)        # envia nova mensagem para ser processada pela IA
+                response = convo.last.text              # Obtem resposta da IA
+
+                envia_msg_texto(tel, response)          # envia resposta de volta para o usuário através da WhatsApp Cloud API
+                return jsonify({"status": "Ok"}), 200
+            
+            # Tratamento de Mensagens de AUDIO
+            elif type_message == "audio":                
                 id_media = message.get("audio").get("id")                   
-                url_media = get_url_media(id_media)   
-                if url_media != "Erro":
-                  # faz o download do audio em formato binário
-                  media = download_media(url_media)             
-                  envia_msg_texto(tel, f"ID_media: {id_media} - URL da mídia: {url_media} - Download: {media}") 
-                  return jsonify({"status": "Ok"}), 200  
+                url_media = get_url_media(id_media)     # obtem URL do audio (Midia protegida por token - WhastApp Cloud API)
+
+                if url_media != "Erro":               
+                    media = download_media(url_media)     # faz o download do audio em formato binário 
+
+                    if media != "Erro":
+                        url_public = store_media(media)     # Salva audio em bucket do Google Cloud Storage e obtem sua URL
+                        if url_public != "Erro":
+                            envia_msg_texto(tel, f"Url Audio: {url_public}") 
+                            return jsonify({"status": "Ok"}), 200  
+                        else:
+                            envia_msg_texto(tel, "Não foi possível salvar o Audio na Nuvem. Tente Novamente") 
+                            return jsonify({"status": "Ok"}), 200  
+                    else:
+                        envia_msg_texto(tel, "Não foi possível obter o Audio. Tente Novamente") 
+                        return jsonify({"status": "Ok"}), 200                                        
                 else:
-                  envia_msg_texto(tel, "Não foi possível obter URL do Audio") 
-                  return jsonify({"status": "Ok"}), 200                                    
+                    envia_msg_texto(tel, "Não foi possível obter a URL do Audio. Tente Novamente") 
+                    return jsonify({"status": "Ok"}), 200       
+
+            # Outros tipos de mensagens (imagens, figurinhas, localização, contato, etc)                                             
             else:               
                 resposta = f"Desculpe ainda não fui programado para analisar mensagens do tipo: {type_message}. Envie somente Texto ou Áudio"
                 envia_msg_texto(tel, resposta)
                 return jsonify({"status": "Ok"}), 200
- 
-    # envia mensagem para ser processada pela IA
-    convo = model.start_chat(history= [])
-    convo.send_message(body_message)
-    resposta = convo.last.text
-
-    # envia resposta de volta para o usuário através da WhatsApp Cloud API
-    envia_msg_texto(tel, resposta)
-    return jsonify({"status": "Ok"}), 200
 
 
 # Endpoint GET para validação do webhook junto a WhatsApp Cloud API
@@ -160,7 +171,7 @@ def get_url_media(id_media):
         return "Erro"
 
 
-# Realiza o Download da midia (audio/video) enviada e salva em Bucket do Google Cloud Storage
+# Realiza o Download de midia (audio/video) 
 def download_media(url_media):    
     headers = {
         "Authorization": f"Bearer {token}"
@@ -168,20 +179,30 @@ def download_media(url_media):
 
     try:
         response = requests.get(url_media, headers=headers, stream=True)
-        response.raise_for_status()  # Verifica se a requisição foi bem-sucedida
-
-        # Conecta ao Google Cloud Storage
-        storage_client = storage.Client()
-        bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob("audio.ogg")
-
-        # Salva o arquivo no Cloud Storage
-        blob.upload_from_string(response.content, content_type="audio/ogg")
-        return "OK"
+        response.raise_for_status()  
+        return response.content
     except requests.exceptions.RequestException as e:
-        return f"Erro ao baixar o arquivo de áudio: {e}"
+        print(f"Erro ao baixar o arquivo de áudio: {e}") 
+        return "Erro"
     except Exception as e:
-        return f"Erro ao salvar no Cloud Storage: {e}"
+        print(f"Erro ao salvar no Cloud Storage: {e}") 
+        return "Erro"
     
+    
+# Salva mídia em Bucket do Google Cloud Storage e retorna sua URL
+def store_media(media):
+    storage_client = storage.Client()           
+    bucket = storage_client.bucket(bucket_name) # Bucket em que será salvo a midia
+    blob = bucket.blob("audio.ogg")             # Nome do arquivo 
+
+    try:
+        blob.upload_from_string(media, content_type="audio/ogg")    # Realiza o Upload do arquivo para o Cloud Storage         
+        file_url = blob.public_url                                  # Obtem sua URL
+        return file_url
+    except Exception as e:
+        print(f"Erro ao tentar salvar mídia no Bucket da Google Cloud Storage. Detalhes: {e}")
+        return "Erro"
+
+
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
