@@ -66,44 +66,35 @@ def webhook():
 
             # Tratamento de Mensagens de TEXTO
             if type_message == "text":
-                body_message = message.get("text").get("body")   # texto da nova mensagem digitada pelo usuário
-                
-                convo = model.start_chat(history= [])   # Inicia chat, contextualizando a IA com o histórico da conversação
-                convo.send_message(body_message)        # envia nova mensagem para ser processada pela IA
-                response = convo.last.text              # Obtem resposta da IA
-
-                envia_msg_texto(tel, response)          # envia resposta de volta para o usuário através da WhatsApp Cloud API
-                return jsonify({"status": "Ok"}), 200
+                body_message = message.get("text").get("body")      # texto da nova mensagem digitada pelo usuário                
+                convo = model.start_chat(history= [])               # Inicia chat, contextualizando a IA com o histórico da conversação
+                convo.send_message(body_message)                    # envia nova mensagem para ser processada pela IA
+                response = convo.last.text                          # Obtem resposta da IA
+                send_text_message(tel, response)                    # envia resposta de volta para o usuário através da WhatsApp Cloud API                
             
             # Tratamento de Mensagens de AUDIO
             elif type_message == "audio":                
                 id_media = message.get("audio").get("id")                   
-                url_media = get_url_media(id_media)     # obtem URL do audio (Midia protegida por token - WhastApp Cloud API)
-
-                if url_media != "Erro":               
-                    media = download_media(url_media)     # faz o download do audio em formato binário 
-
-                    if media != "Erro":
-                        url_public = store_media(media)     # Salva audio em bucket do Google Cloud Storage e obtem sua URL
-                        if url_public != "Erro":
-                            envia_msg_texto(tel, f"Url Audio: {url_public}") 
-                            return jsonify({"status": "Ok"}), 200  
+                url_media = get_url_media(id_media)                 # obtem URL do audio (Midia protegida por token - WhastApp Cloud API)
+                if url_media:               
+                    media = download_media(url_media)               # faz o download do audio em formato binário 
+                    if media:
+                        url_public = store_media(media)             # Salva audio em bucket do Google Cloud Storage e obtem sua URL
+                        if url_public:
+                            send_text_message(tel, f"Url Audio: {url_public}")  # envia resposta de volta para o usuário através da WhatsApp Cloud API       
                         else:
-                            envia_msg_texto(tel, "Não foi possível salvar o Audio na Nuvem. Tente Novamente") 
-                            return jsonify({"status": "Ok"}), 200  
+                            send_text_message(tel, "Não foi possível salvar o Audio na Nuvem. Tente Novamente") 
                     else:
-                        envia_msg_texto(tel, "Não foi possível obter o Audio. Tente Novamente") 
-                        return jsonify({"status": "Ok"}), 200                                        
+                        send_text_message(tel, "Não foi possível obter o Audio. Tente Novamente") 
                 else:
-                    envia_msg_texto(tel, "Não foi possível obter a URL do Audio. Tente Novamente") 
-                    return jsonify({"status": "Ok"}), 200       
+                    send_text_message(tel, "Não foi possível obter a URL do Audio. Tente Novamente") 
 
             # Outros tipos de mensagens (imagens, figurinhas, localização, contato, etc)                                             
             else:               
                 resposta = f"Desculpe ainda não fui programado para analisar mensagens do tipo: {type_message}. Envie somente Texto ou Áudio"
-                envia_msg_texto(tel, resposta)
-                return jsonify({"status": "Ok"}), 200
-
+                send_text_message(tel, resposta)    # envia resposta de volta para o usuário através da WhatsApp Cloud API       
+    
+    return jsonify({"status": "Ok"}), 200
 
 # Endpoint GET para validação do webhook junto a WhatsApp Cloud API
 @app.route("/webhook", methods=["GET"])
@@ -123,7 +114,7 @@ def verify_webhook():
 
 
 # Envia mensagem de texto para a WhatsApp Cloud API
-def envia_msg_texto(tel, text_response):
+def send_text_message(tel, text_response):
     
     url_base = os.environ.get("URL_BASE") 
     id_tel = os.environ.get("ID_TEL") 
@@ -168,7 +159,7 @@ def get_url_media(id_media):
     if response.status_code == 200:
         return response.json().get("url")
     else:
-        return "Erro"
+        return False
 
 
 # Realiza o Download de midia (audio/video) 
@@ -183,10 +174,10 @@ def download_media(url_media):
         return response.content
     except requests.exceptions.RequestException as e:
         print(f"Erro ao baixar o arquivo de áudio: {e}") 
-        return "Erro"
+        return False
     except Exception as e:
         print(f"Erro ao salvar no Cloud Storage: {e}") 
-        return "Erro"
+        return False
     
     
 # Salva mídia em Bucket do Google Cloud Storage e retorna sua URL
@@ -201,7 +192,7 @@ def store_media(media):
         return file_url
     except Exception as e:
         print(f"Erro ao tentar salvar mídia no Bucket da Google Cloud Storage. Detalhes: {e}")
-        return "Erro"
+        return False
 
 
 if __name__ == "__main__":
