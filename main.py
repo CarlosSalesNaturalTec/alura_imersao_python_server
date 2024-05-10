@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import requests
 import hashlib
+import time
 import google.generativeai as genai
 from google.cloud import storage 
 from dotenv import load_dotenv
@@ -79,7 +80,7 @@ def webhook():
                 if url_media:               
                     media = download_media(url_media)               # faz o download do audio em formato binário 
                     if media:
-                        url_public = store_media(media)             # Salva audio em bucket do Google Cloud Storage e obtem sua URL
+                        url_public = store_media(media, tel)             # Salva audio em bucket do Google Cloud Storage e obtem sua URL
                         if url_public:
                             send_text_message(tel, f"Url Audio: {url_public}")  # envia resposta de volta para o usuário através da WhatsApp Cloud API       
                         else:
@@ -91,7 +92,7 @@ def webhook():
 
             # Outros tipos de mensagens (imagens, figurinhas, localização, contato, etc)                                             
             else:               
-                resposta = f"Desculpe ainda não fui programado para analisar mensagens do tipo: {type_message}. Envie somente Texto ou Áudio"
+                resposta = f"Desculpe ainda não fui programado para analisar mensagens do tipo: *{type_message}*. Envie somente Texto ou Áudio"
                 send_text_message(tel, resposta)    # envia resposta de volta para o usuário através da WhatsApp Cloud API       
     
     return jsonify({"status": "Ok"}), 200
@@ -181,10 +182,11 @@ def download_media(url_media):
     
     
 # Salva mídia em Bucket do Google Cloud Storage e retorna sua URL
-def store_media(media):
+def store_media(media, tel):
     storage_client = storage.Client()           
     bucket = storage_client.bucket(bucket_name) # Bucket em que será salvo a midia
-    blob = bucket.blob("audio.ogg")             # Nome do arquivo 
+    file_name = f"{tel}_{time.time()}.ogg"          # Nome do arquivo a ser salvo (concatena número do telefone + timestamp)
+    blob = bucket.blob(file_name)               
 
     try:
         blob.upload_from_string(media, content_type="audio/ogg")    # Realiza o Upload do arquivo para o Cloud Storage         
