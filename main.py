@@ -71,6 +71,7 @@ def webhook():
             message = change["value"]["messages"][0]
             tel = message.get("from")
             type_message = message.get("type")
+            message_history = get_menssages(tel)                    # Obtem histórico de mensagens
 
             # Tratamento de Mensagens de TEXTO
             if type_message == "text":
@@ -78,9 +79,10 @@ def webhook():
                 role = "user"                                       # role=user => mensagem enviada pelo usuário
                 store_message(tel, role, body_message)              # Salva mensagem em banco NO-SQL. 
 
-                convo = model.start_chat(history= [])               # Inicia chat, contextualizando a IA com o histórico da conversação
+                convo = model.start_chat(history = message_history) # Inicia chat, contextualizando a IA com o histórico da conversação
                 convo.send_message(body_message)                    # envia nova mensagem para ser processada pela IA
                 response = convo.last.text                          # Obtem resposta da IA
+
                 send_message = send_text_message(tel, response)     # Envia resposta de volta para o usuário através da WhatsApp Cloud API                
                 if send_message:
                     role = "model"                                  # role=model => mensagem enviada pela IA
@@ -223,6 +225,26 @@ def store_message(tel, role, message):
         print(f"Erro ao salvar mensagem no Firebase/FireStore. Detalhes: {e}")
         return False
     
+
+# Obtem histórico de mensagens do telefone, a partir de Banco No-SQL hospedado na Google Cloud FireStore/Firebase
+def get_menssages(tel):
+    mensagens_ref = db.collection(f"messages_{tel}").order_by("timestamp")
+    mensagens = mensagens_ref.stream()
+
+    # Lista para armazenar as mensagens formatadas
+    messages_array = []
+
+    for mensagem in mensagens:
+        message_dict = mensagem.to_dict()
+        # Cria o formato desejado para cada mensagem
+        formatted_message = {
+            "role": message_dict["role"],
+            "parts": message_dict["parts"]
+        }
+        messages_array.append(formatted_message)
+
+    return messages_array
+
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
