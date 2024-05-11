@@ -8,3 +8,5 @@
 ##  E ai, está esperando o que ? Comece a aprender AGORA!
 
 ## Link do ChatBot : https://wa.me/+557132352803
+
+# 😆 Prometo atualizar ainda hoje este arquivo README com todos os detalhes sobre a aplicação. 
