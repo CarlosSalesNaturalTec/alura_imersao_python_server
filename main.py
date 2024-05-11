@@ -14,7 +14,8 @@ load_dotenv()
 
 # Variáveis de ambiente
 my_api_key = os.environ.get("API_KEY")                        # Gemini - API_KEY
-system_instruction =  os.environ.get("SYSTEM_INSTRUCTIONS")   # Gemini - Instruções do Sistema / Prompt contendo a "Persona" do Assistente.
+system_instruction = os.environ.get("SYSTEM_INSTRUCTIONS")    # Gemini - Instruções do Sistema / Informa as caracteristicas do Assistente.
+prompt = os.environ.get("PROMPT")                             # Gemini - Prompt para solicitar análise do audio
 url_base = os.environ.get("URL_BASE")                         # WhatsApp Cloud API - URL base da API (incluindo versão)
 token = os.environ.get("TOKEN")                               # WhatsApp Cloud API - Token de segurança para acesso às mensagens 
 bucket_name = os.environ.get("BUCKET_NAME")                   # Google Cloud Storage - Nome do Bucket para armazenamento de midias
@@ -47,13 +48,13 @@ safety_settings = [
 
 # Inicia modelo
 genai.configure(api_key=my_api_key)
-model = genai.GenerativeModel(model_name="gemini-1.5-pro-latest",
-                              generation_config=generation_config,
-                              system_instruction=system_instruction,
-                              safety_settings=safety_settings)
+model = genai.GenerativeModel(model_name="models/gemini-1.5-pro-latest",
+        generation_config=generation_config,
+        system_instruction=system_instruction,
+        safety_settings=safety_settings)
 
 # Inicializa o Firebase app (Gestão de Banco No-SQL ref. histórico de mensagens)
-cred = credentials.Certificate("/credentials/firebase_credentials.json")    # Path: /credentials/... => volume criado dentro do container / Google Cloud Run
+cred = credentials.Certificate("/credentials/firebase_credentials.json")    # Path: /credentials/... => volume criado dentro do container, na console do Google Cloud Run
 firebase_admin.initialize_app(cred)
 db = firestore.client()
 
@@ -71,13 +72,18 @@ def webhook():
             message = change["value"]["messages"][0]
             tel = message.get("from")
             type_message = message.get("type")
+            id_text = message.get("id")
             message_history = get_menssages(tel)                    # Obtem histórico de mensagens
 
             # Tratamento de Mensagens de TEXTO
             if type_message == "text":
+                if exist_idText(id_text):                           # Validação para evitar duplicidade de lançamentos, caso a WhatsApp Cloud API envie a mesma mensagem repetidamente
+                    return 
+                
                 body_message = message.get("text").get("body")      # Texto da mensagem digitada pelo usuário      
                 role = "user"                                       # role=user => mensagem enviada pelo usuário
                 store_message(tel, role, body_message)              # Salva mensagem em banco NO-SQL. 
+                store_idText(id_text)                               # Salva ID do texto para posterior validação de duplicidade
 
                 convo = model.start_chat(history = message_history) # Inicia chat, contextualizando a IA com o histórico da conversação
                 convo.send_message(body_message)                    # envia nova mensagem para ser processada pela IA
@@ -90,14 +96,39 @@ def webhook():
             
             # Tratamento de Mensagens de AUDIO
             elif type_message == "audio":                
-                id_media = message.get("audio").get("id")                   
+                id_media = message.get("audio").get("id")   
+                if exist_idMedia(id_media):                         # Validação para evitar duplicidade de lançamentos, caso a WhatsApp Cloud API envie a mesma mensagem repetidamente
+                    return 
+                
                 url_media = get_url_media(id_media)                 # obtem URL do audio (Midia protegida por token - WhastApp Cloud API)
                 if url_media:               
                     media = download_media(url_media)               # faz o download do audio em formato binário 
                     if media:
-                        url_public = store_media(media, tel)             # Salva audio em bucket do Google Cloud Storage e obtem sua URL
-                        if url_public:
-                            send_text_message(tel, f"Url Audio: {url_public}")  # envia resposta de volta para o usuário através da WhatsApp Cloud API       
+                        file_name = store_media(media, tel)         # Salva audio em bucket do Google Cloud Storage 
+                        if file_name:
+                            store_idMedia(id_media)
+                            role = "user"                                       # role=user => mensagem enviada pelo usuário
+                            store_audio_message(tel, role, file_name)           # Salva mensagem com nome do arquivo de audio em banco No-SQL. 
+
+                            try:
+                                convo = model.start_chat(history = message_history)             # Inicia chat, contextualizando a IA com o histórico da conversação
+
+                                path_media = f"/audiomessages/{file_name}"                      # Path: /audiomessages/... => volume criado dentro do container, na console do Google Cloud Run
+                                audio_media = genai.upload_file(path=path_media, mime_type="audio/ogg")
+
+                                audio_analysis = model.generate_content([prompt, audio_media])  # Analisa audio 
+                                response = audio_analysis.text                                  # Resposta com a respectiva avaliação do desafio
+
+                                send_message = send_text_message(tel, response)     # Envia resposta de volta para o usuário através da WhatsApp Cloud API                
+                                if send_message:
+                                    role = "model"                                  # role=model => mensagem enviada pela IA
+                                    store_message(tel, role, response)              # Salva mensagem em banco NO-SQL. 
+                            except Exception as e:
+                                send_message = send_text_message(tel, "Opa, algo deu errado e não consegui analisar seu audio. Digite: Reiniciar")
+                                if send_message:
+                                    role = "model"                                  # role=model => mensagem enviada pela IA
+                                    store_message(tel, role, response)              # Salva mensagem em banco NO-SQL. 
+                            
                         else:
                             send_text_message(tel, "Não foi possível salvar o Audio na Nuvem. Tente Novamente") 
                     else:
@@ -196,17 +227,16 @@ def download_media(url_media):
         return False
     
     
-# Salva mídia em Bucket do Google Cloud Storage e retorna sua URL
+# Salva mídia em Bucket do Google Cloud Storage e retorna seu nome
 def store_media(media, tel):
     storage_client = storage.Client()           
-    bucket = storage_client.bucket(bucket_name) # Bucket em que será salvo a midia
-    file_name = f"{tel}_{time.time()}.ogg"          # Nome do arquivo a ser salvo (concatena número do telefone + timestamp)
+    bucket = storage_client.bucket(bucket_name)     # Bucket em que será salvo a midia
+    file_name = f"{tel}_{int(time.time())}.ogg"          # Nome do arquivo a ser salvo (concatena número do telefone + timestamp)
     blob = bucket.blob(file_name)               
 
     try:
-        blob.upload_from_string(media, content_type="audio/ogg")    # Realiza o Upload do arquivo para o Cloud Storage         
-        file_url = blob.public_url                                  # Obtem sua URL
-        return file_url
+        blob.upload_from_string(media, content_type="audio/ogg")    # Realiza o Upload do arquivo para o Cloud Storage      
+        return file_name        
     except Exception as e:
         print(f"Erro ao tentar salvar mídia no Bucket da Google Cloud Storage. Detalhes: {e}")
         return False
@@ -215,9 +245,9 @@ def store_media(media, tel):
 # Salva mensagem em banco No-SQL para recuperação de histórico de conversa
 def store_message(tel, role, message):
     try:
-        doc_ref = db.collection(f"messages_{tel}").document()
+        doc_ref = db.collection(f"message_history_{tel}").document()
         doc_ref.set({
-            "timestamp": time.time(),
+            "timestamp": int(time.time()),
             "role": role,
             "parts": [message]
         })    
@@ -225,10 +255,59 @@ def store_message(tel, role, message):
         print(f"Erro ao salvar mensagem no Firebase/FireStore. Detalhes: {e}")
         return False
     
+# Salva nome do arquivo de audio em banco No-SQL para recuperação de histórico de conversa
+def store_audio_message(tel, role, file_name):    
+    try:
+        doc_ref = db.collection(f"message_history_{tel}").document()
+        audio_history = f"genai.upload_file('/audiomessages/{file_name}')"
+        doc_ref.set({
+            "timestamp": int(time.time()),
+            "role": role,
+            "parts": [audio_history]
+        })    
+    except Exception as e:
+        print(f"Erro ao salvar mensagem com URL do Audio no Firebase/FireStore. Detalhes: {e}")
+        return False
+
+
+def store_idMedia(id_media):
+    doc_ref = db.collection("id_medias").document()
+    doc_ref.set({
+            "timestamp": int(time.time()),
+            "id_media": id_media
+        })    
+
+
+def exist_idMedia(id_media):
+    mensagens_ref = db.collection("id_medias").where("id_media", "==", id_media)
+    mensagens = mensagens_ref.stream()
+    response = False
+    for mensagem in mensagens:
+        response = True
+    
+    return response
+
+
+def store_idText(id_text):
+    doc_ref = db.collection("id_text").document()
+    doc_ref.set({
+            "timestamp": int(time.time()),
+            "id_text": id_text
+        })   
+    
+
+def exist_idText(id_text):
+    mensagens_ref = db.collection("id_text").where("id_text", "==", id_text)
+    mensagens = mensagens_ref.stream()
+    response = False
+    for mensagem in mensagens:
+        response = True
+    
+    return response
 
 # Obtem histórico de mensagens do telefone, a partir de Banco No-SQL hospedado na Google Cloud FireStore/Firebase
 def get_menssages(tel):
-    mensagens_ref = db.collection(f"messages_{tel}").order_by("timestamp")
+    mensagens_ref = db.collection(f"message_history_{tel}").order_by("timestamp")
     mensagens = mensagens_ref.stream()
 
     # Lista para armazenar as mensagens formatadas
