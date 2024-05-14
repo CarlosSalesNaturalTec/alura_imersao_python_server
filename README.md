@@ -3,8 +3,6 @@
 
 ## São cerca de 40 idiomas disponíveis para você testar sua pronúcia e sair falando (viajando) por ai!
 
-### Este ChatBot foi desenvolvido em atendimento ao desafio da *Imersão Alura em Inteligência Artificial* .
-
 ##  E ai, está esperando o que ? Comece a aprender AGORA!
 
 ## Link do ChatBot : https://wa.me/+557132352803
@@ -19,6 +17,3 @@
 * Google Firebase/FireStore - Banco de dados No-SQL para histórico de mensagens;
 * Google Gemini (Generative AI) - Inteligência Artificial Generativa responsável pela "mágica" que torna o projeto disruptivo! 
 
-Esta versão incial do projeto (que levei 3 dias pra fazer) é relativamente simples. Foram 329 linhas de código que se encarregam de fazer TUDO, desde o recebimento das mensagens enviadas pela plataforma oficial do Whatsapp até o processamento dos textos e áudios realizado pela IA Generativa da Google.
-
-Continua...
